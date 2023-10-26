@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
 use core::iter::once;
 
 // Ensure we halt the program on panic (if we don't mention this crate it won't
@@ -12,15 +13,13 @@ use rp2040_hal as hal;
 
 // Some traits we need
 // use cortex_m::prelude::*;
-use fugit::{ExtU32, RateExtU32};
-use hal::clocks::Clock;
-
-// A shorter alias for the Peripheral Access Crate, which provides low-level
-// register access
-use hal::pac;
-
-// Some traits we need
-use embedded_hal::timer::CountDown;
+use cortex_m;
+use fugit::RateExtU32;
+use hal::{
+    clocks::Clock,
+    gpio::{FunctionI2C, Pin, PullUp},
+    pac,
+};
 
 // USB Device support
 use usb_device::{class_prelude::*, prelude::*};
@@ -32,6 +31,12 @@ use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812;
 
 use hal::pio::PIOExt;
+
+use heapless::String;
+
+use shared_bus::BusManagerSimple;
+use mpu6050;
+use qmc5883l::*;
 
 /// The linker will place this boot block at the start of our program image. We
 /// need this to help the ROM bootloader get our code up and running.
@@ -66,6 +71,17 @@ fn wheel(mut wheel_pos: u8) -> RGB8 {
 }
 
 
+fn write_serial(ser: &mut SerialPort<hal::usb::UsbBus>, string: &str)  {
+    match ser.write(string.as_bytes()) {
+        Ok(_count) => {
+            // count bytes were written
+        },
+        Err(UsbError::WouldBlock) => {},  // No data could be written (buffers full)
+        Err(_err) => {},  // An error occurred
+    };
+}
+
+
 /// Entry point to our bare-metal application.
 ///
 /// The `#[rp2040_hal::entry]` macro ensures the Cortex-M start-up code calls this function
@@ -77,6 +93,8 @@ fn wheel(mut wheel_pos: u8) -> RGB8 {
 fn main() -> ! {
     // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
+
+    let core = pac::CorePeripherals::take().unwrap();
 
     // Set up the watchdog driver - needed by the clock setup code
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
@@ -95,8 +113,9 @@ fn main() -> ! {
     .unwrap();
 
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-    let mut delay = timer.count_down();
 
+    // The delay object lets us wait for specified amounts of time (in milliseconds)
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     // The single-cycle I/O block controls our GPIO pins
     let sio = hal::Sio::new(pac.SIO);
@@ -109,20 +128,25 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // === SPI ===
-    // These are implicitly used by the spi driver if they are in the correct mode
-    let spi_sclk = pins.gpio2.into_function::<hal::gpio::FunctionSpi>();
-    let spi_mosi = pins.gpio3.into_function::<hal::gpio::FunctionSpi>();
-    let spi_miso = pins.gpio4.into_function::<hal::gpio::FunctionSpi>();
-    let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (spi_mosi, spi_miso, spi_sclk));
+    // === I2C ===
+    // Configure two pins as being I²C, not GPIO
+    let sda_pin: Pin<_, FunctionI2C, PullUp> = pins.gpio14.reconfigure();
+    let scl_pin: Pin<_, FunctionI2C, PullUp> = pins.gpio15.reconfigure();
 
-    // Exchange the uninitialised SPI driver for an initialised one
-    let mut spi = spi.init(
+    // Create the I²C drive, using the two pre-configured pins. This will fail
+    // at compile time if the pins are in the wrong mode, or if this I²C
+    // peripheral isn't available on these pins!
+    let i2c = hal::I2C::i2c1(
+        pac.I2C1,
+        sda_pin,
+        scl_pin,
+        400.kHz(),
         &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
-        16.MHz(),
-        embedded_hal::spi::MODE_0,
+        &clocks.system_clock,
     );
+    let i2c_bus = BusManagerSimple::new(i2c);
+
+    // === SPI ===
 
     // === USB ===
     let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
@@ -156,17 +180,47 @@ fn main() -> ! {
         timer.count_down(),
     );
 
+    // === MPU6050 ===
+    let mut mpu = mpu6050::Mpu6050::new(i2c_bus.acquire_i2c());
+    mpu.init(&mut delay).unwrap();
+
+    // === QMC5883 ===
+    let mut qmc = QMC5883L::new(i2c_bus.acquire_i2c()).unwrap();
+    qmc.continuous().unwrap();
+
     // Infinite colour wheel loop
     let mut n: u8 = 128;
     loop {
-        delay.start(10_u32.millis());
-        let _ = nb::block!(delay.wait());
+        delay.delay_ms(10);
 
         ws.write(brightness(once(wheel(n)), 32)).unwrap();
         n = n.wrapping_add(1);
 
+
         if !usb_dev.poll(&mut [&mut serial]) {
             continue
+        }
+
+        // get gyro data, scaled with sensitivity
+        let gyro = mpu.get_gyro().unwrap();
+        // write!(temp_str, "gyro: {:?}\r\n", gyro).unwrap();
+        // write_serial(&mut serial, temp_str.as_str());
+        // usb_dev.poll(&mut [&mut serial]);
+
+        // get accelerometer data, scaled with sensitivity
+        let acc = mpu.get_acc().unwrap();
+        // write!(temp_str, "acc: {:?}\r\n", acc).unwrap();
+        // write_serial(&mut serial, temp_str.as_str());
+        // usb_dev.poll(&mut [&mut serial]);
+
+        let (x, y, z) = qmc.mag().unwrap();
+        // write!(temp_str, "mag: {:?}, {:?}, {:?}\r\n", x, y, z).unwrap();
+        // write_serial(&mut serial, temp_str.as_str());
+        // usb_dev.poll(&mut [&mut serial]);
+
+        if n % 20 == 0 {
+            // let mut temp_str: String<512> = String::new();
+
         }
     }
 }
