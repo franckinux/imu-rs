@@ -235,6 +235,7 @@ dependencies = [
  "format_no_std",
  "fugit",
  "heapless",
+ "libm",
  "mpu6050",
  "nb 1.1.0",
  "panic-halt",

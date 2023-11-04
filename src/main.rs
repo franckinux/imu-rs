@@ -1,8 +1,19 @@
 #![no_std]
 #![no_main]
 
+// Used frame : ENU
+// Rotation order is ZYX
+
+// psi (Ψψ) = yaw = lacet
+// theta (Θθ) = pitch = tangage
+// phi a(Φφ) = roll = roulis
+
 use core::fmt::Write;
 use core::iter::once;
+
+use embedded_hal::timer::CountDown;
+use fugit::ExtU32;
+use libm;
 
 // Ensure we halt the program on panic (if we don't mention this crate it won't
 // be linked)
@@ -19,6 +30,7 @@ use hal::{
     clocks::Clock,
     gpio::{FunctionI2C, Pin, PullUp},
     pac,
+    pio::PIOExt,
 };
 
 // USB Device support
@@ -30,13 +42,11 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812;
 
-use hal::pio::PIOExt;
-
 use heapless::String;
 
 use shared_bus::BusManagerSimple;
 use mpu6050;
-use qmc5883l::*;
+use qmc5883l;
 
 /// The linker will place this boot block at the start of our program image. We
 /// need this to help the ROM bootloader get our code up and running.
@@ -185,43 +195,82 @@ fn main() -> ! {
     mpu.init(&mut delay).unwrap();
 
     // === QMC5883 ===
-    let mut qmc = QMC5883L::new(i2c_bus.acquire_i2c()).unwrap();
+    let mut qmc = qmc5883l::QMC5883L::new(i2c_bus.acquire_i2c()).unwrap();
     qmc.continuous().unwrap();
 
     // Infinite colour wheel loop
     let mut n: u8 = 128;
+    let mut count_down = timer.count_down();
     loop {
-        delay.delay_ms(10);
+        count_down.start(10.millis());
 
         ws.write(brightness(once(wheel(n)), 32)).unwrap();
         n = n.wrapping_add(1);
 
+        // get accelerometer data, scaled with sensitivity
+        let acc = mpu.get_acc().unwrap();
+        let acc_x = -acc.x as f64;
+        let acc_y = -acc.y as f64;
+        let acc_z = -acc.z as f64;
+
+        // get gyro data, scaled with sensitivity
+        let gyro = mpu.get_gyro().unwrap();
+        let gyro_x = gyro.x as f64;
+        let gyro_y = gyro.y as f64;
+        let gyro_z = gyro.z as f64;
+
+        let (mag_x, mag_y, mag_z) = qmc.mag().unwrap();
+        let mag_x = -mag_x as f64;
+        let mag_y = -mag_y as f64;
+        let mag_z = -mag_z as f64;
+
+        // compute theta and phi from the accelerometer
+        let a = libm::sqrt(acc_x * acc_x + acc_y * acc_y + acc_z * acc_z);
+        let phi = -libm::asin(acc_y / a);
+        let theta = libm::asin(acc_x / a);
+
+        let cp = libm::cos(phi);
+        let sp = libm::sin(phi);
+        let ct = libm::cos(theta);
+        let st = libm::sin(theta);
+
+        // compute tilt compensated theta and phi
+        let mag_x_compensated = mag_x * ct + mag_y * sp * st - mag_z * cp * st;
+        let mag_y_compensated = mag_y * cp + mag_z * sp;
+
+        // compute yaw from compensated theta/phi and megnetometer data
+        let psi = libm::atan2(mag_y_compensated, mag_x_compensated);
 
         if !usb_dev.poll(&mut [&mut serial]) {
             continue
         }
 
-        // get gyro data, scaled with sensitivity
-        let gyro = mpu.get_gyro().unwrap();
-        // write!(temp_str, "gyro: {:?}\r\n", gyro).unwrap();
-        // write_serial(&mut serial, temp_str.as_str());
-        // usb_dev.poll(&mut [&mut serial]);
-
-        // get accelerometer data, scaled with sensitivity
-        let acc = mpu.get_acc().unwrap();
-        // write!(temp_str, "acc: {:?}\r\n", acc).unwrap();
-        // write_serial(&mut serial, temp_str.as_str());
-        // usb_dev.poll(&mut [&mut serial]);
-
-        let (x, y, z) = qmc.mag().unwrap();
-        // write!(temp_str, "mag: {:?}, {:?}, {:?}\r\n", x, y, z).unwrap();
-        // write_serial(&mut serial, temp_str.as_str());
-        // usb_dev.poll(&mut [&mut serial]);
-
         if n % 20 == 0 {
-            // let mut temp_str: String<512> = String::new();
+            let mut temp_str: String<512> = String::new();
+
+            temp_str.truncate(0);
+            write!(temp_str, "theta: {:?}, phi: {:?}, psi: {:?}\r\n", theta * 57.295779513, phi * 57.295779513, psi * 57.295779513).unwrap();
+            write_serial(&mut serial, temp_str.as_str());
+            usb_dev.poll(&mut [&mut serial]);
+
+            // temp_str.truncate(0);
+            // write!(temp_str, "gyro: {:+10.6}, {:+10.6}, {:+10.6}\r\n", gyro_x, gyro_y, gyro_z).unwrap();
+            // write_serial(&mut serial, temp_str.as_str());
+            // usb_dev.poll(&mut [&mut serial]);
+            //
+            // temp_str.truncate(0);
+            // write!(temp_str, "acc: {:+10.6}, {:+10.6}, {:+10.6}\r\n", acc_x, acc_y, acc_z).unwrap();
+            // write_serial(&mut serial, temp_str.as_str());
+            // usb_dev.poll(&mut [&mut serial]);
+            //
+            // temp_str.truncate(0);
+            // write!(temp_str, "mag: {:+10.2}, {:+10.2}, {:+10.2}\r\n", mag_x, mag_y, mag_z).unwrap();
+            // write_serial(&mut serial, temp_str.as_str());
+            // usb_dev.poll(&mut [&mut serial]);
 
         }
+
+        let _ = nb::block!(count_down.wait());
     }
 }
 
