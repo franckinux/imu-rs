@@ -14,10 +14,11 @@ cortex-m-rt = "0.7.3"
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
 format_no_std = "1.0.0"
 fugit = "0.3.7"
-heapless = "0.7.16"
+heapless = "0.8.0"
 nb = "1.0.0"
-shared-bus = "0.2.4"
+shared-bus = "0.3.1"
 libm = "0.2.8"
+crc = "3.0.1"
 
 panic-halt = "0.2.0"
 
@@ -32,5 +33,6 @@ usbd-hid = "0.6.1"
 smart-leds = "0.3.0"
 ws2812-pio = "0.7.0"
 
+eeprom24x = "0.6.0"
 mpu6050 = "0.1.6"
 qmc5883l = "0.0.1"
