@@ -1,38 +1,46 @@
 [package]
+authors = ["Franck Barbenoire <franck.barbenoire@boble.tech>"]
+edition = "2021"
+readme = "README.md"
 name = "imu-rs"
 version = "0.1.0"
-edition = "2021"
-
-# [target.thumbv6m-none-eabi]
-# runner = "probe-run --chip RP2040"
-# Default is to copy the generated file on the USB mass storage. Loot at
-# .cargo/config.
 
 [dependencies]
+byte = "0.2.7"
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
-embedded-hal = { version = "0.2.7", features = ["unproven"] }
-format_no_std = "1.0.0"
+cortex-m-semihosting = "0.5.0"
+embedded-hal = "0.2.7"
 fugit = "0.3.7"
-heapless = "0.8.0"
-nb = "1.0.0"
-shared-bus = "0.3.1"
-libm = "0.2.8"
+nb = "1.1.0"
+# panic-halt = "0.2.0"
+panic-semihosting = "0.6.0"
+shared-bus = "0.2.4"
 crc = "3.0.1"
+libm = "0.2.8"
 
-panic-halt = "0.2.0"
-
-# If you're not going to use a Board Support Package you'll need these:
-rp2040-hal = { version="0.9.0", features=["rt", "critical-section-impl"] }
-rp2040-boot2 = "0.3.0"
-
-usb-device = "0.2.9"
-usbd-serial = "0.1.1"
-usbd-hid = "0.6.1"
-
-smart-leds = "0.3.0"
-ws2812-pio = "0.7.0"
-
-eeprom24x = "0.6.0"
-mpu6050 = "0.1.6"
+bmi160 = "0.1.2"
+eeprom24x = "=0.6.1"
+lsm6ds33 = "=0.5.0"
 qmc5883l = "0.0.1"
+
+[dependencies.stm32f4xx-hal]
+version = "0.19.0"
+features = ["stm32f411"]
+
+[dependencies.num-traits]
+version = "0.2.18"
+default-features = false
+features = ["libm"]
+
+[features]
+default = ["lsm6ds3", "qmc5883l"]
+bmi160 = []
+lsm6ds3 = []
+qmc5883l = []
+
+# this lets you use `cargo fix`!
+[[bin]]
+name = "imu-rs"
+test = false
+bench = false
